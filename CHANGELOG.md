@@ -6,7 +6,7 @@
 * Enable user CRUD by default *[Feature]*
 * Add public `documentdb-local` Docker image with gateway to GHCR
 
-### documentdb v0.103-0 (Unreleased) ###
+### documentdb v0.103-0 (May 09, 2025) ###
 * Support collation with aggregation and find on sharded collections *[Feature]*
 * Support `$convert` on `binData` to `binData`, `string` to `binData` and `binData` to `string` (except with `format: auto`) *[Feature]*
 * Fix list_databases for databases with size > 2 GB *[Bugfix]* (#119)
