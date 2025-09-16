@@ -1,0 +1,145 @@
+name: MongoDB Compatibility Tests 
+
+# Ensure we don't run duplicate workflows on the same branch/PR
+concurrency:
+  group: mongodb-compat-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+  pull_request_review:
+    types: [submitted]   
+
+jobs:
+  mongodb-compat-tests-ubuntu:
+    if: github.event.review.state == 'approved' || github.actor == 'nektos/act'
+    runs-on: ${{ matrix.runner }}
+    name: Run mongo compatibility tests on ${{ matrix.runner }} with PG ${{ matrix.pg_version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_version:
+          - 16
+          - 17
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            base_arch: AMD64
+            runner: ubuntu-22.04
+          - arch: arm64
+            base_arch: ARM64
+            runner: ubuntu-22.04-arm
+
+    env:
+      DEFAULT_BASE_VERSION: '0.104.0'
+      IMAGE_NAME: documentdb-local
+      IMAGE_TAG: ${{ github.run_id }}-$(date +'%Y-%m-%d')
+      TEST_USER: test_user
+      DOCDB_PORT: 10260
+      PG_PORT: 9719
+      
+    steps:
+      - name: Checkout DocumentDB repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install required dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl python3-pip
+          python3 -m pip install pymongo
+
+      - name: Set up environment
+        run: |
+          echo "Setting up test environment"
+          mkdir -p test-results
+          echo "BASE_VERSION=${{ github.event.inputs.base_version || env.DEFAULT_BASE_VERSION }}" >> $GITHUB_ENV
+          
+          # Generate a random password for this test run. 
+          TEST_PWD=$(openssl rand -base64 32 | tr -d '/+=\n')
+          echo "TEST_PWD=$TEST_PWD" >> $GITHUB_ENV
+          
+          # Set up MongoDB connection URL with the generated password
+          MONGO_URL="mongodb://$TEST_USER:$TEST_PWD@localhost:$DOCDB_PORT/?authMechanism=SCRAM-SHA-256&tls=true&tlsAllowInvalidCertificates=true&ssl=true"
+          echo "MONGO_URL=$MONGO_URL" >> $GITHUB_ENV
+
+      - name: Build and start DocumentDB
+        id: start-documentdb
+        run: |
+          echo "Building image"
+          # Build Docker image for DocumentDB
+          TAG=${{ env.IMAGE_TAG }}-${{ matrix.arch }}
+          docker build \
+            --build-arg BASE_ARCH=${{ matrix.base_arch }} \
+            --build-arg BASE_VERSION=${{ env.BASE_VERSION }} \
+            --build-arg PG_VERSION=${{ matrix.pg_version }} \
+            -t ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG \
+            -f .github/containers/Build-Ubuntu/Dockerfile_gateway .
+          
+          echo "Starting DocumentDB server on port $DOCDB_PORT"
+          docker run -dt \
+            -p $DOCDB_PORT:$DOCDB_PORT \
+            --name documentdb-server \
+            -e USERNAME=$TEST_USER \
+            -e PASSWORD=$TEST_PWD \
+            -e DOCUMENTDB_PORT=$DOCDB_PORT \
+            -e POSTGRESQL_PORT=$PG_PORT \
+            ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG
+          
+          echo "Waiting for DocumentDB server to be ready..."
+          max_retries=10
+          retry_count=0
+          
+          while [ $retry_count -lt $max_retries ]; do
+            if python3 -c "import pymongo; pymongo.MongoClient('$MONGO_URL').admin.command('ping')"; then
+              echo "DocumentDB server is running and ready"
+              docker logs documentdb-server > test-results/documentdb-startup.log 2>&1
+              break
+            fi
+            
+            retry_count=$((retry_count+1))
+            echo "Waiting for DocumentDB to start (attempt $retry_count/$max_retries)..."
+            sleep 2
+          done
+          
+          # Check if we reached max retries
+          if [ $retry_count -eq $max_retries ]; then
+            echo "DocumentDB server failed to start after $max_retries attempts"
+            docker logs documentdb-server > test-results/documentdb-startup.log 2>&1
+            exit 1
+          fi          
+
+      - name: Clone MongoDB service tests repository
+        run: |
+          echo "Cloning MongoDB service tests repository"
+          git clone https://github.com/mongodb-developer/service-tests.git service-tests
+          
+          cd service-tests
+          cd 'Compatibility Websites Code'
+
+          python3 -m pip install -r requirements.txt
+
+          # Populate the URIs against which to run the test, and where to store results
+          sed -i "s|DOCDB_URI = .*|DOCDB_URI = '$(echo "$MONGO_URL" | sed 's/&/\\&/g')'|" ./config.py
+          sed -i "s|RESULT_DB_URI = .*|RESULT_DB_URI = '$(echo "$MONGO_URL" | sed 's/&/\\&/g')'|" ./config.py
+          
+          # Run the tests
+          echo "Running Tests"
+          python3 run_test.py | tee test_output.txt
+          
+          # Capture compatibility percentage in a variable
+          COMPATIBILITY_PERCENTAGE=$(grep "Compatibility Percentage" test_output.txt | grep -o '[0-9]\+\.[0-9]\+')
+
+          # TODO: Compare against baseline
+          
+          # Display the compatibility percentage
+          echo "Compatibility Percentage: $COMPATIBILITY_PERCENTAGE"
+         
+      - name: Cleanup
+        if: always() 
+        run: |
+          docker rm -f documentdb-server || true
