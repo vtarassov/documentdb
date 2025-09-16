@@ -75,6 +75,9 @@ pub trait SetupConfiguration: DynClone + Send + Sync + Debug {
     /// Returns the time to wait for PostgreSQL to start up before giving up.
     fn postgres_startup_wait_time_seconds(&self) -> u64;
 
+    /// Returns the number of worker threads for the async runtime.
+    fn worker_threads(&self) -> usize;
+
     /// Provides a way to downcast the trait object to a concrete type.
     fn as_any(&self) -> &dyn std::any::Any;
 }

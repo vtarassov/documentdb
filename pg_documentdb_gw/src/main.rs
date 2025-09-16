@@ -24,8 +24,7 @@ use documentdb_gateway::{
 
 use tokio::signal;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     // Takes the configuration file as an argument
     let cfg_file = if let Some(arg1) = env::args().nth(1) {
         PathBuf::from(arg1)
@@ -34,6 +33,30 @@ async fn main() {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("SetupConfiguration.json")
     };
 
+    // Load configuration synchronously
+    let setup_configuration = DocumentDBSetupConfiguration::new(&cfg_file)
+        .expect("Failed to load configuration.");
+
+    log::info!(
+        "Starting server with configuration: {:?}",
+        setup_configuration
+    );
+
+    // Create Tokio runtime with configured worker threads
+    let worker_threads = setup_configuration.worker_threads();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .build()
+        .expect("Failed to create Tokio runtime");
+
+    log::info!("Created Tokio runtime with {} worker threads", worker_threads);
+
+    // Run the async main logic
+    runtime.block_on(start_gateway(setup_configuration));
+}
+
+async fn start_gateway(setup_configuration: DocumentDBSetupConfiguration) {
     let shutdown_token = SHUTDOWN_CONTROLLER.token();
 
     tokio::spawn(async move {
@@ -41,15 +64,6 @@ async fn main() {
         log::info!("Ctrl+C received. Shutting down Rust gateway.");
         SHUTDOWN_CONTROLLER.shutdown();
     });
-
-    let setup_configuration = DocumentDBSetupConfiguration::new(&cfg_file)
-        .await
-        .expect("Failed to load configuration.");
-
-    log::info!(
-        "Starting server with configuration: {:?}",
-        setup_configuration
-    );
 
     let certificate_provider = CertificateProvider::new(SetupConfiguration::certificate_options(
         &setup_configuration,

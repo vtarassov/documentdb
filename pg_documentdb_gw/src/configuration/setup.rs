@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use serde::Deserialize;
-use tokio::fs::File;
+use std::fs::File;
 
 use super::SetupConfiguration;
 use crate::{
@@ -46,12 +46,15 @@ pub struct DocumentDBSetupConfiguration {
     pub dynamic_configuration_refresh_interval_secs: Option<u32>,
     pub postgres_command_timeout_secs: Option<u64>,
     pub postgres_startup_wait_time_seconds: Option<u64>,
+    
+    // Runtime configuration
+    pub worker_threads: Option<usize>,
 }
 
 impl DocumentDBSetupConfiguration {
-    pub async fn new(config_path: &Path) -> Result<Self> {
-        let config_file = File::open(config_path).await?;
-        serde_json::from_reader(config_file.into_std().await).map_err(|e| {
+    pub fn new(config_path: &Path) -> Result<Self> {
+        let config_file = File::open(config_path)?;
+        serde_json::from_reader(config_file).map_err(|e| {
             DocumentDBError::internal_error(format!("Failed to parse configuration file: {}", e))
         })
     }
@@ -130,5 +133,9 @@ impl SetupConfiguration for DocumentDBSetupConfiguration {
 
     fn postgres_startup_wait_time_seconds(&self) -> u64 {
         self.postgres_startup_wait_time_seconds.unwrap_or(60)
+    }
+
+    fn worker_threads(&self) -> usize {
+        self.worker_threads.unwrap_or(1)
     }
 }
