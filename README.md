@@ -12,7 +12,6 @@ The project comprises of three components, which work together to support docume
 - **pg_documentdb :** The public API surface for DocumentDB providing CRUD functionality on documents in the store.
 - **pg_documentdb_gw :** The gateway protocol translation layer that converts the user's MongoDB APIs into PostgreSQL queries.
 
-
 ## Why DocumentDB ?
 
 At DocumentDB, we believe in the power of open-source to drive innovation and collaboration. Our commitment to being a fully open-source MongoDB compatible document database means that we are dedicated to transparency, community involvement, and continuous improvement. We are open-sourced under the most permissive [MIT](https://opensource.org/license/mit) license, where developers and organizations alike have no restrictions incorporating the project into new and existing solutions of their own. DocumentDB introduces the BSON data type to PostgreSQL and provides APIs for seamless operation within native PostgreSQL, enhancing efficiency and aligning with operational advantages.
@@ -30,6 +29,8 @@ We chose PostgreSQL as our platform for several reasons:
 5. **Compliance and Security**: PostgreSQL's robust security features and compliance with various standards makes it an ideal choice for organizations with stringent security and regulatory requirements.
 
 ## Get Started
+
+[Building From Source](/docs/v1/building.md)
 
 ### Prerequisites
 - Python 3.7+
