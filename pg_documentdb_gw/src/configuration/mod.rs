@@ -78,6 +78,9 @@ pub trait SetupConfiguration: DynClone + Send + Sync + Debug {
     /// Returns the number of worker threads for the async runtime.
     fn async_runtime_worker_threads(&self) -> usize;
 
+    /// Returns whether TLS should be enforced for all connections.
+    fn enforce_tls(&self) -> bool;
+
     /// Provides a way to downcast the trait object to a concrete type.
     fn as_any(&self) -> &dyn std::any::Any;
 }
