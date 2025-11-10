@@ -28,6 +28,7 @@ pub struct DocumentDBSetupConfiguration {
     // Gateway listener configuration
     pub use_local_host: Option<bool>,
     pub gateway_listen_port: Option<u16>,
+    pub enforce_tls: Option<bool>,
 
     // Postgres configuration
     pub postgres_system_user: Option<String>,
@@ -141,5 +142,9 @@ impl SetupConfiguration for DocumentDBSetupConfiguration {
                 .map(|p| p.get())
                 .unwrap_or(1)
         })
+    }
+
+    fn enforce_tls(&self) -> bool {
+        self.enforce_tls.unwrap_or(true)
     }
 }
