@@ -75,11 +75,7 @@ where
 }
 
 /// Serializes the Message to bytes and writes them to `writer`.
-pub async fn write_message<S>(
-    header: &Header,
-    response: &RawDocument,
-    writer: &mut S,
-) -> Result<()>
+pub async fn write_message<S>(header: &Header, response: &RawDocument, writer: &mut S) -> Result<()>
 where
     S: AsyncWrite + Unpin,
 {

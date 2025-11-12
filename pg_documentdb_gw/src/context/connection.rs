@@ -50,7 +50,9 @@ impl ConnectionContext {
         transport_protocol: String,
     ) -> Self {
         let cipher_type = if let Some(tls) = tls_config {
-            service_context.tls_provider().ciphersuite_to_i32(tls.current_cipher())
+            service_context
+                .tls_provider()
+                .ciphersuite_to_i32(tls.current_cipher())
         } else {
             0
         };
