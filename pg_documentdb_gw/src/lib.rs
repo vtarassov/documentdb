@@ -136,7 +136,7 @@ where
 /// - Byte 1: 0x03 (SSL/TLS major version)
 /// - Byte 2: 0x01-0x04 (TLS minor version for TLS 1.0 through 1.3)
 ///
-/// The client has a limited timeframe to send the first three bytes of the stream. 
+/// The client has a limited timeframe to send the first three bytes of the stream.
 ///
 /// # Arguments
 ///
@@ -156,19 +156,22 @@ async fn detect_tls_handshake(tcp_stream: &TcpStream, connection_id: Uuid) -> Re
     let mut peek_buf = [0u8; 3];
     let deadline = tokio::time::Instant::now() + Duration::from_secs(TLS_PEEK_TIMEOUT_SECS);
 
-    // Loop to cover the rare cases where peek might not immediately return the full header. 
+    // Loop to cover the rare cases where peek might not immediately return the full header.
     loop {
         let time_remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
 
         match tokio::time::timeout(time_remaining, tcp_stream.peek(&mut peek_buf)).await {
             Ok(Ok(0)) => {
-                return Err(DocumentDBError::internal_error("Connection closed".to_string()));
+                return Err(DocumentDBError::internal_error(
+                    "Connection closed".to_string(),
+                ));
             }
             Ok(Ok(n)) => {
                 // Return false immediately if any of the seen bytes do not match
                 if peek_buf[0] != 0x16
                     || (n >= 2 && peek_buf[1] != 0x03)
-                    || (n >= 3 && (peek_buf[2] < 0x01 || peek_buf[2] > 0x04)) {
+                    || (n >= 3 && (peek_buf[2] < 0x01 || peek_buf[2] > 0x04))
+                {
                     return Ok(false);
                 }
 
@@ -181,7 +184,9 @@ async fn detect_tls_handshake(tcp_stream: &TcpStream, connection_id: Uuid) -> Re
                     activity_id = connection_id.to_string().as_str();
                     "Error during TLS detection: {e:?}"
                 );
-                return Err(DocumentDBError::internal_error(format!("Error reading from stream {e:?}")));
+                return Err(DocumentDBError::internal_error(format!(
+                    "Error reading from stream {e:?}"
+                )));
             }
             Err(_) => {
                 log::warn!(
@@ -189,7 +194,9 @@ async fn detect_tls_handshake(tcp_stream: &TcpStream, connection_id: Uuid) -> Re
                     "TLS detection peek operation timed out after {} seconds.",
                     TLS_PEEK_TIMEOUT_SECS
                 );
-                return Err(DocumentDBError::internal_error("Timeout reading from stream".to_string()));
+                return Err(DocumentDBError::internal_error(
+                    "Timeout reading from stream".to_string(),
+                ));
             }
         }
 
@@ -292,7 +299,7 @@ where
         );
 
         handle_stream::<T, _>(buffered_stream, conn_ctx).await;
-    } else {    
+    } else {
         // Non-TLS path
         let conn_ctx = ConnectionContext::new(
             service_context,
