@@ -191,8 +191,7 @@ async fn detect_tls_handshake(tcp_stream: &TcpStream, connection_id: Uuid) -> Re
             Err(_) => {
                 log::warn!(
                     activity_id = connection_id.to_string().as_str();
-                    "TLS detection peek operation timed out after {} seconds.",
-                    TLS_PEEK_TIMEOUT_SECS
+                    "TLS detection peek operation timed out after {TLS_PEEK_TIMEOUT_SECS} seconds."
                 );
                 return Err(DocumentDBError::internal_error(
                     "Timeout reading from stream".to_string(),

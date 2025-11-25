@@ -113,7 +113,7 @@ pub async fn write_error<S>(
 where
     S: AsyncWrite + Unpin,
 {
-    let response = 
+    let response =
         to_raw_document_buf(&CommandError::from_error(connection_context, &err, activity_id).await)
             .map_err(|e| DocumentDBError::internal_error(bson_serialize_error_message(e)))?;
 
@@ -131,8 +131,9 @@ pub async fn write_error_without_header<S>(
 where
     S: AsyncWrite + Unpin,
 {
-    let response = to_raw_document_buf(&CommandError::from_error(connection_context, &err, activity_id).await)
-        .map_err(|e| DocumentDBError::internal_error(bson_serialize_error_message(e)))?;
+    let response =
+        to_raw_document_buf(&CommandError::from_error(connection_context, &err, activity_id).await)
+            .map_err(|e| DocumentDBError::internal_error(bson_serialize_error_message(e)))?;
 
     let header = Header {
         length: (response.as_bytes().len() + 1) as i32,
