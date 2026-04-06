@@ -33,6 +33,9 @@
 #include <utils/index_selfuncs.h>
 #include <access/gin.h>
 #include <catalog/pg_collation.h>
+#include <catalog/namespace.h>
+#include <access/reloptions.h>
+#include <commands/defrem.h>
 
 #include "metadata/index.h"
 #include "query/query_operator.h"
@@ -43,6 +46,9 @@
 #include "opclass/bson_index_support.h"
 #include "opclass/bson_gin_index_mgmt.h"
 #include "opclass/bson_gin_composite_scan.h"
+#include "opclass/bson_gin_index_term.h"
+#include "opclass/bson_gin_composite_private.h"
+#include "opclass/bson_gin_composite.h"
 #include "opclass/bson_text_gin.h"
 #include "metadata/metadata_cache.h"
 #include "utils/documentdb_errors.h"
@@ -207,6 +213,10 @@ extern bool EnableExplainScanIndexCosts;
 /* Forward declaration */
 /* --------------------------------------------------------- */
 static Expr * HandleSupportRequestCondition(SupportRequestIndexCondition *req);
+static Expr * HandleExBtreeSupportRequestCondition(SupportRequestIndexCondition *req,
+												   const MongoIndexOperatorInfo *operator,
+												   List *args, bytea *options,
+												   Datum queryValue);
 static Path * ReplaceFunctionOperatorsInPlanPath(PlannerInfo *root, RelOptInfo *rel,
 												 Path *path, PlanParentType parentType,
 												 ReplaceExtensionFunctionContext *context);
@@ -3238,12 +3248,113 @@ HandleSupportRequestCondition(SupportRequestIndexCondition *req)
 			return NULL;
 		}
 
+		/* Check if this is an exbtree index — if so, produce @@= / @@< / @@> quals */
+		Oid exbtreeAmOid = get_am_oid("exbtree", true);
+		if (OidIsValid(exbtreeAmOid) && req->index->relam == exbtreeAmOid)
+		{
+			return HandleExBtreeSupportRequestCondition(req, operator, args,
+														options, queryValue);
+		}
+
 		Expr *finalExpression =
 			(Expr *) GetOpExprClauseFromIndexOperator(operator, args, options);
 		return finalExpression;
 	}
 
 	return NULL;
+}
+
+
+/*
+ * HandleExBtreeSupportRequestCondition
+ *
+ * Produces btree-native range quals for exbtree indexes by serializing
+ * the query value as a composite index term and reusing
+ * GetOpExprClauseFromIndexOperator with a synthetic operator info.
+ */
+static Expr *
+HandleExBtreeSupportRequestCondition(SupportRequestIndexCondition *req,
+									 const MongoIndexOperatorInfo *operator,
+									 List *args, bytea *options,
+									 Datum queryValue)
+{
+	const char *xbtOperatorName = NULL;
+	switch (operator->indexStrategy)
+	{
+		case BSON_INDEX_STRATEGY_DOLLAR_EQUAL:
+			xbtOperatorName = "@@=";
+			break;
+		case BSON_INDEX_STRATEGY_DOLLAR_GREATER:
+			xbtOperatorName = "@@>";
+			break;
+		case BSON_INDEX_STRATEGY_DOLLAR_GREATER_EQUAL:
+			xbtOperatorName = "@@>=";
+			break;
+		case BSON_INDEX_STRATEGY_DOLLAR_LESS:
+			xbtOperatorName = "@@<";
+			break;
+		case BSON_INDEX_STRATEGY_DOLLAR_LESS_EQUAL:
+			xbtOperatorName = "@@<=";
+			break;
+		default:
+			return NULL;
+	}
+
+	/* Extract the filter value and build a document keyed by the index path
+	 * so that GenerateCompositeTermsFromIndexSpec can find it.
+	 * The queryValue is a bson like {"foo": "hello"} — we need to pass it
+	 * through as-is (or re-key it to match the index path).  For a single-path
+	 * index the filter element's path IS the index path, so we reconstruct
+	 * a document with that path.
+	 */
+	pgbson *queryBson = DatumGetPgBson(queryValue);
+	pgbsonelement filterElement;
+	PgbsonToSinglePgbsonElement(queryBson, &filterElement);
+
+	pgbson_writer writer;
+	PgbsonWriterInit(&writer);
+
+	/* Reconstruct the key spec from the composite path options */
+	BsonGinCompositePathOptions *compositeOptions =
+		(BsonGinCompositePathOptions *) options;
+	const char *indexPaths[INDEX_MAX_KEYS] = { 0 };
+	int8_t sortOrders[INDEX_MAX_KEYS] = { 0 };
+	int32_t pathCount = GetIndexPathsFromCompositeOptions(compositeOptions,
+														  indexPaths, sortOrders);
+
+	/* Use the first index path as the document key so the term generator finds it */
+	if (pathCount > 0)
+	{
+		PgbsonWriterAppendValue(&writer, indexPaths[0], strlen(indexPaths[0]),
+								&filterElement.bsonValue);
+	}
+	else
+	{
+		PgbsonWriterAppendValue(&writer, "", 0, &filterElement.bsonValue);
+	}
+	pgbson *valueBson = PgbsonWriterGetPgbson(&writer);
+
+	/* Generate the index term for the query value */
+	uint32_t numTerms = 0;
+	Datum *terms = GenerateCompositeTermsFromOptions(valueBson, compositeOptions,
+													 &numTerms);
+	if (numTerms == 0)
+		return NULL;
+
+	/* Replace the operand with the serialized term and reuse GetOpExprClauseFromIndexOperator */
+	Const *termConst = makeConst(BsonTypeId(), -1, InvalidOid, -1,
+								 terms[0], false, false);
+	List *newArgs = list_make2(linitial(args), termConst);
+
+	MongoIndexOperatorInfo xbtOperator = {
+		.postgresOperatorName = (char *) xbtOperatorName,
+		.indexStrategy = operator->indexStrategy,
+		.isApiInternalSchema = false,
+	};
+
+	req->lossy = false;  /* no recheck - assume the index scan is exact for now */
+
+	return (Expr *) GetOpExprClauseFromIndexOperator(&xbtOperator, newArgs, options);
 }
 
 

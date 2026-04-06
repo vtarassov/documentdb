@@ -5,8 +5,6 @@ set -u
 # exit immediately if a command exits with a non-zero status
 set -e
 
-pushd $INSTALL_DEPENDENCIES_ROOT
-
 # If not set only then set below variables
 if [ -z ${DESTINSTALLDIR+x} ]; then
     DESTINSTALLDIR="/usr"
@@ -29,10 +27,14 @@ POSTGIS_REF=$(GetPostgisVersion)
 . $scriptDir/utils.sh
 pgBinDir=$(GetPostgresPath $PGVERSION)
 
+pushd $INSTALL_DEPENDENCIES_ROOT
+
 POSTGIS_REPO=postgis-repo
 rm -rf $POSTGIS_REPO
 mkdir $POSTGIS_REPO
 cd $POSTGIS_REPO
+
+PATH=/usr/local/bin:$PATH
 
 curl https://download.osgeo.org/postgis/source/postgis-$POSTGIS_REF.tar.gz -o ./postgis-$POSTGIS_REF.tar.gz
 tar -xf ./postgis-$POSTGIS_REF.tar.gz --strip-components 1
@@ -60,8 +62,8 @@ fi
 echo "Configure options for PostGIS $CONFIGURE_OPTIONS"
 ./configure $CONFIGURE_OPTIONS
 # do not use parallel build as it may cause race conditional issues
-make PATH=$PATH
-make PATH=$PATH install
+sudo PATH=$PATH make 
+sudo PATH=$PATH make install
 
 popd
 

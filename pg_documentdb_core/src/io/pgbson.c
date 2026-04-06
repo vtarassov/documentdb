@@ -448,8 +448,15 @@ PgbsonToCanonicalExtendedJson(const pgbson *bsonDocument)
 	if (!bson_init_static(&bson, (const uint8_t *) VARDATA_ANY(bsonDocument),
 						  VARSIZE_ANY_EXHDR(bsonDocument)))
 	{
-		ereport(ERROR, (errcode(ERRCODE_DOCUMENTDB_BADVALUE),
-						errmsg("invalid input syntax for BSON")));
+		/* 
+		 * Temporary hack to allow exbtree conditions to be rendered, 
+		 * which contain an indexterm rather than a bson
+		 */
+		return PgbsonToHexadecimalString(bsonDocument);
+		
+		// ereport(ERROR, (errcode(ERRCODE_DOCUMENTDB_BADVALUE),
+		// 				errmsg("invalid input syntax for BSON")));
+
 	}
 
 	/* since bson strings are palloced - we can simply return the string created. */

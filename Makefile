@@ -19,15 +19,18 @@ install-documentdb:
 	$(MAKE) -C pg_documentdb_core install
 	$(MAKE) -C pg_documentdb install
 	$(MAKE) -C pg_documentdb_extended_rum install
+	$(MAKE) -C pg_documentdb_extended_btree install
 
 .DEFAULT:
 	$(MAKE) -C pg_documentdb_core
 	$(MAKE) -C pg_documentdb
 	$(MAKE) -C pg_documentdb_extended_rum
+	$(MAKE) -C pg_documentdb_extended_btree
 	$(MAKE) -C internal/pg_documentdb_distributed
 
 %:
 	$(MAKE) -C pg_documentdb_core $@
 	$(MAKE) -C pg_documentdb $@
 	$(MAKE) -C pg_documentdb_extended_rum $@
+	$(MAKE) -C pg_documentdb_extended_btree $@
 	$(MAKE) -C internal/pg_documentdb_distributed $@

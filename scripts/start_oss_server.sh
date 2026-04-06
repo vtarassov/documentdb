@@ -52,6 +52,7 @@ distributed="false"
 allowExternalAccess="false"
 gatewayWorker="false"
 useDocumentdbExtendedRum="false"
+useExtendedBtree="true"
 customAdminUser="docdb_admin"
 customAdminUserPassword="Admin100"
 valgrindMode="false"
@@ -96,7 +97,7 @@ AddHBAConfigToServers() {
   fi
 }
 
-while getopts "d:p:u:a:hcsxegrvf:l:n:w:" opt; do
+while getopts "d:p:u:a:hcsxegrvf:l:n:w:b" opt; do
   case $opt in
     d) postgresDirectory="$OPTARG"
     ;;
@@ -122,6 +123,8 @@ while getopts "d:p:u:a:hcsxegrvf:l:n:w:" opt; do
     a) customAdminUserPassword="$OPTARG"
     ;;
     v) valgrindMode="true"
+    ;;
+    b) useExtendedBtree="false"
     ;;
     f) extraConfigFile="$OPTARG"
     ;;
@@ -206,7 +209,7 @@ else
   extensionName="documentdb"
 fi
 
-preloadLibraries="pg_documentdb_core, pg_documentdb"
+preloadLibraries="pg_documentdb_core, pg_documentdb, pg_extended_btree, pg_documentdb_extended_btree"
 
 if [ "$distributed" == "true" ]; then
   preloadLibraries="citus, $preloadLibraries, pg_documentdb_distributed"
@@ -335,7 +338,7 @@ fi
 userName=$(whoami)
 if [ ! -d /var/run/postgresql ]; then
   sudo mkdir -p /var/run/postgresql
-  sudo chown -R $userName:$userName /var/run/postgresql
+  sudo chown -R $userName /var/run/postgresql
 fi
 
 if [ "$logPath" == "" ]; then
@@ -350,6 +353,9 @@ if [ "$initSetup" == "true" ]; then
   if [ "$useDocumentdbExtendedRum" == "true" ] && [ "$initSetup" == "true" ]; then
     psql -p $coordinatorPort -d postgres -c "CREATE EXTENSION documentdb_extended_rum"
   fi
+
+  psql -p $coordinatorPort -d postgres -c "CREATE EXTENSION IF NOT EXISTS pg_extended_btree"
+  psql -p $coordinatorPort -d postgres -c "CREATE EXTENSION IF NOT EXISTS documentdb_extended_btree"
 
   if [ "$distributed" == "true" ]; then
     psql -p $coordinatorPort -d postgres -c "SELECT citus_set_coordinator_host('localhost', $coordinatorPort);"

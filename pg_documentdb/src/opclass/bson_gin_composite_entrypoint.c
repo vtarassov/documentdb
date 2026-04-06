@@ -2023,6 +2023,39 @@ GenerateCompositeTermsFromIndexSpec(pgbson *document, pgbson *keySpec, uint32_t 
 
 
 /*
+ * GenerateCompositeTermsFromOptions generates index terms from a document
+ * using pre-parsed BsonGinCompositePathOptions directly, avoiding the
+ * round-trip through a keySpec bson.
+ */
+Datum *
+GenerateCompositeTermsFromOptions(pgbson *document,
+								  BsonGinCompositePathOptions *options,
+								  uint32_t *numTerms)
+{
+	GinEntryPathData pathData = { 0 };
+	bool addMetadataTerms = false;
+	pathData.terms.entries = GenerateCompositeTermsCore(document, options,
+														&pathData.terms.index,
+														addMetadataTerms);
+	*numTerms = pathData.terms.index;
+	return pathData.terms.entries;
+}
+
+
+/*
+ * Public wrapper for GetIndexPathsFromOptions.
+ * Extracts the index paths and sort orders from composite path options.
+ */
+int32_t
+GetIndexPathsFromCompositeOptions(BsonGinCompositePathOptions *options,
+								  const char **indexPaths,
+								  int8_t *sortOrders)
+{
+	return GetIndexPathsFromOptions(options, indexPaths, sortOrders);
+}
+
+
+/*
  * gin_bson_get_composite_path_generated_terms is an internal utility function that allows to retrieve
  * the set of terms that *would* be inserted in the index for a given document for a single
  * path index option specification.
