@@ -3248,9 +3248,13 @@ HandleSupportRequestCondition(SupportRequestIndexCondition *req)
 			return NULL;
 		}
 
-		/* Check if this is an exbtree index — if so, produce @@= / @@< / @@> quals */
-		Oid exbtreeAmOid = get_am_oid("exbtree", true);
-		if (OidIsValid(exbtreeAmOid) && req->index->relam == exbtreeAmOid)
+		/*
+		 * For non-RUM composite AMs (e.g. exbtree), delegate to the
+		 * exbtree-specific handler which marks the scan as lossy so
+		 * that the original dollar operator is kept as a heap recheck.
+		 */
+		if (req->index->relam != RumIndexAmId() &&
+			IsCompositeOpFamilyOid(req->index->relam, operatorFamily))
 		{
 			return HandleExBtreeSupportRequestCondition(req, operator, args,
 														options, queryValue);
@@ -3268,9 +3272,13 @@ HandleSupportRequestCondition(SupportRequestIndexCondition *req)
 /*
  * HandleExBtreeSupportRequestCondition
  *
- * Produces btree-native range quals for exbtree indexes by serializing
- * the query value as a composite index term and reusing
- * GetOpExprClauseFromIndexOperator with a synthetic operator info.
+ * For non-RUM btree-based AMs (e.g. exbtree), the btree index scan maps
+ * all dollar operators to equality-based scan keys.  The adapter's
+ * extractQuery wraps the dollar strategy into the composite query spec
+ * at scan time, and comparePartial handles partial-match filtering
+ * within the index.  However, the btree AM cannot natively enforce
+ * range semantics, so we mark the scan as lossy to ensure Postgres
+ * keeps the original dollar operator as a heap-level recheck filter.
  */
 static Expr *
 HandleExBtreeSupportRequestCondition(SupportRequestIndexCondition *req,
@@ -3278,83 +3286,9 @@ HandleExBtreeSupportRequestCondition(SupportRequestIndexCondition *req,
 									 List *args, bytea *options,
 									 Datum queryValue)
 {
-	const char *xbtOperatorName = NULL;
-	switch (operator->indexStrategy)
-	{
-		case BSON_INDEX_STRATEGY_DOLLAR_EQUAL:
-			xbtOperatorName = "@@=";
-			break;
-		case BSON_INDEX_STRATEGY_DOLLAR_GREATER:
-			xbtOperatorName = "@@>";
-			break;
-		case BSON_INDEX_STRATEGY_DOLLAR_GREATER_EQUAL:
-			xbtOperatorName = "@@>=";
-			break;
-		case BSON_INDEX_STRATEGY_DOLLAR_LESS:
-			xbtOperatorName = "@@<";
-			break;
-		case BSON_INDEX_STRATEGY_DOLLAR_LESS_EQUAL:
-			xbtOperatorName = "@@<=";
-			break;
-		default:
-			return NULL;
-	}
-
-	/* Extract the filter value and build a document keyed by the index path
-	 * so that GenerateCompositeTermsFromIndexSpec can find it.
-	 * The queryValue is a bson like {"foo": "hello"} — we need to pass it
-	 * through as-is (or re-key it to match the index path).  For a single-path
-	 * index the filter element's path IS the index path, so we reconstruct
-	 * a document with that path.
-	 */
-	pgbson *queryBson = DatumGetPgBson(queryValue);
-	pgbsonelement filterElement;
-	PgbsonToSinglePgbsonElement(queryBson, &filterElement);
-
-	pgbson_writer writer;
-	PgbsonWriterInit(&writer);
-
-	/* Reconstruct the key spec from the composite path options */
-	BsonGinCompositePathOptions *compositeOptions =
-		(BsonGinCompositePathOptions *) options;
-	const char *indexPaths[INDEX_MAX_KEYS] = { 0 };
-	int8_t sortOrders[INDEX_MAX_KEYS] = { 0 };
-	int32_t pathCount = GetIndexPathsFromCompositeOptions(compositeOptions,
-														  indexPaths, sortOrders);
-
-	/* Use the first index path as the document key so the term generator finds it */
-	if (pathCount > 0)
-	{
-		PgbsonWriterAppendValue(&writer, indexPaths[0], strlen(indexPaths[0]),
-								&filterElement.bsonValue);
-	}
-	else
-	{
-		PgbsonWriterAppendValue(&writer, "", 0, &filterElement.bsonValue);
-	}
-	pgbson *valueBson = PgbsonWriterGetPgbson(&writer);
-
-	/* Generate the index term for the query value */
-	uint32_t numTerms = 0;
-	Datum *terms = GenerateCompositeTermsFromOptions(valueBson, compositeOptions,
-													 &numTerms);
-	if (numTerms == 0)
-		return NULL;
-
-	/* Replace the operand with the serialized term and reuse GetOpExprClauseFromIndexOperator */
-	Const *termConst = makeConst(BsonTypeId(), -1, InvalidOid, -1,
-								 terms[0], false, false);
-	List *newArgs = list_make2(linitial(args), termConst);
-
-	MongoIndexOperatorInfo xbtOperator = {
-		.postgresOperatorName = (char *) xbtOperatorName,
-		.indexStrategy = operator->indexStrategy,
-		.isApiInternalSchema = false,
-	};
-
-	req->lossy = false;  /* no recheck - assume the index scan is exact for now */
-
-	return (Expr *) GetOpExprClauseFromIndexOperator(&xbtOperator, newArgs, options);
+	Expr *finalExpression =
+		(Expr *) GetOpExprClauseFromIndexOperator(operator, args, options);
+	return finalExpression;
 }
 
 

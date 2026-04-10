@@ -10,8 +10,14 @@
  * and the planner infrastructure recognize the index.
  *
  * The extractValue function (proc 100) uses
- * GenerateCompositeTermsFromIndexSpec to produce index terms
+ * GenerateCompositeTermsFromOptions to produce index terms
  * in the same format as the composite GIN path.
+ *
+ * extractQuery (proc 101), consistent (proc 102), and
+ * comparePartial (proc 103) delegate to the existing composite
+ * path implementations from pg_documentdb, enabling RUM-like
+ * query decomposition and partial-match scanning within the
+ * exbtree AM.
  *-------------------------------------------------------------------------
  */
 
@@ -44,6 +50,25 @@ PG_FUNCTION_INFO_V1(documentdb_xbt_lt);
 PG_FUNCTION_INFO_V1(documentdb_xbt_lte);
 PG_FUNCTION_INFO_V1(documentdb_xbt_gt);
 PG_FUNCTION_INFO_V1(documentdb_xbt_gte);
+
+/* RUM-like support functions for composite path ops */
+PG_FUNCTION_INFO_V1(documentdb_xbt_extract_query);
+PG_FUNCTION_INFO_V1(documentdb_xbt_compare_partial);
+PG_FUNCTION_INFO_V1(documentdb_xbt_consistent);
+
+/* Imported composite path functions from pg_documentdb */
+extern Datum gin_bson_composite_path_extract_query(PG_FUNCTION_ARGS);
+extern Datum gin_bson_composite_path_compare_partial(PG_FUNCTION_ARGS);
+extern Datum gin_bson_composite_path_consistent(PG_FUNCTION_ARGS);
+
+/*
+ * Strategy offset: the exbtree opclass registers the dollar operators at
+ * (BsonIndexStrategy + EXBT_STRATEGY_OFFSET) so they don't collide with
+ * btree's native strategies 1-5.  The adapter subtracts this offset before
+ * delegating to the composite path functions which expect the original
+ * BsonIndexStrategy values.
+ */
+#define EXBT_STRATEGY_OFFSET 5
 
 /* --------------------------------------------------------- */
 /* AM registration                                            */
@@ -125,7 +150,7 @@ _PG_init(void)
 /* extractValue (proc 100 for exbtree AM)                     */
 /*                                                            */
 /* Reads the composite path options and uses                  */
-/* GenerateCompositeTermsFromIndexSpec to produce index terms. */
+/* GenerateCompositeTermsFromOptions to produce index terms.   */
 /* --------------------------------------------------------- */
 
 Datum
@@ -229,4 +254,108 @@ Datum documentdb_xbt_gte(PG_FUNCTION_ARGS)
 	int32_t c = CompareIndexTermBytea(l, r);
 	PG_FREE_IF_COPY(l, 0); PG_FREE_IF_COPY(r, 1);
 	PG_RETURN_BOOL(c >= 0);
+}
+
+/* --------------------------------------------------------- */
+/* extractQuery (proc 101 for exbtree AM)                     */
+/*                                                            */
+/* The planner passes through the original dollar operators   */
+/* (e.g. @>) at offset strategy numbers.  We wrap the         */
+/* individual dollar operator into the composite query spec   */
+/* format that the composite path extract_query expects for   */
+/* BSON_INDEX_STRATEGY_COMPOSITE_QUERY, then delegate.        */
+/* --------------------------------------------------------- */
+
+Datum
+documentdb_xbt_extract_query(PG_FUNCTION_ARGS)
+{
+	/* arg 0 = query bson, arg 2 = strategy (int2) */
+	int16 offsetStrategy = PG_GETARG_INT16(2);
+	int16 realStrategy = offsetStrategy - EXBT_STRATEGY_OFFSET;
+
+	pgbson *queryBson = PG_GETARG_PGBSON(0);
+
+	/*
+	 * Wrap the individual dollar operator into the composite query spec:
+	 *   { "q": [ { "op": <strategy>, <path>: <value> } ], "m": true, "or": false, "db": false }
+	 *
+	 * This is the same format ModifyScanKeysForCompositeScan produces
+	 * at rescan time in the RUM path.
+	 */
+	pgbson_writer querySpecWriter;
+	PgbsonWriterInit(&querySpecWriter);
+
+	pgbson_array_writer queryWriter;
+	PgbsonWriterStartArray(&querySpecWriter, "q", 1, &queryWriter);
+
+	pgbson_writer clauseWriter;
+	PgbsonArrayWriterStartDocument(&queryWriter, &clauseWriter);
+	PgbsonWriterAppendInt32(&clauseWriter, "op", 2, (int32_t) realStrategy);
+	PgbsonWriterConcat(&clauseWriter, queryBson);
+	PgbsonArrayWriterEndDocument(&queryWriter, &clauseWriter);
+
+	PgbsonWriterEndArray(&querySpecWriter, &queryWriter);
+
+	PgbsonWriterAppendBool(&querySpecWriter, "m", 1, true);
+	PgbsonWriterAppendBool(&querySpecWriter, "or", 2, false);
+	PgbsonWriterAppendBool(&querySpecWriter, "db", 2, false);
+
+	pgbson *compositeQuery = PgbsonWriterGetPgbson(&querySpecWriter);
+
+	/* Replace arg 0 with the composite spec and arg 2 with COMPOSITE_QUERY */
+	fcinfo->args[0].value = PointerGetDatum(compositeQuery);
+	fcinfo->args[2].value = Int16GetDatum(BSON_INDEX_STRATEGY_COMPOSITE_QUERY);
+
+	return gin_bson_composite_path_extract_query(fcinfo);
+}
+
+/* --------------------------------------------------------- */
+/* comparePartial (proc 103 for exbtree AM)                   */
+/*                                                            */
+/* extractQuery wrapped the dollar operator into COMPOSITE_   */
+/* QUERY format, so comparePartial must see that strategy     */
+/* regardless of the opclass strategy on the scan key.        */
+/* --------------------------------------------------------- */
+
+Datum
+documentdb_xbt_compare_partial(PG_FUNCTION_ARGS)
+{
+	/* Force strategy to COMPOSITE_QUERY - extractQuery already wrapped it */
+	fcinfo->args[2].value = Int16GetDatum(BSON_INDEX_STRATEGY_COMPOSITE_QUERY);
+
+	return gin_bson_composite_path_compare_partial(fcinfo);
+}
+
+/* --------------------------------------------------------- */
+/* consistent (proc 102 for exbtree AM)                       */
+/*                                                            */
+/* In GIN/RUM, consistent is called per-TID after             */
+/* comparePartial has already filtered non-matching entries.   */
+/* The GIN consistent has early-return optimizations that      */
+/* skip checking the check[] array.  In exbtree, the btree    */
+/* positions with >= on the extracted lower bound, so boundary */
+/* values that comparePartial rejects (check[i]=false) still  */
+/* reach consistent.  We must verify all check[] entries are   */
+/* true before delegating.                                     */
+/* --------------------------------------------------------- */
+
+Datum
+documentdb_xbt_consistent(PG_FUNCTION_ARGS)
+{
+	bool *check = (bool *) PG_GETARG_POINTER(0);
+	int32_t numKeys = (int32_t) PG_GETARG_INT32(3);
+	bool *recheck = (bool *) PG_GETARG_POINTER(5);
+
+	for (int i = 0; i < numKeys; i++)
+	{
+		if (!check[i])
+		{
+			*recheck = false;
+			PG_RETURN_BOOL(false);
+		}
+	}
+
+	/* All keys matched - delegate for additional logic */
+	fcinfo->args[1].value = Int16GetDatum(BSON_INDEX_STRATEGY_COMPOSITE_QUERY);
+	return gin_bson_composite_path_consistent(fcinfo);
 }
